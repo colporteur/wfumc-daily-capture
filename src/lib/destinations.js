@@ -114,9 +114,12 @@ export async function saveAsPastoralNote({
 /**
  * Save a segment as a resources row in the Sermons app's library.
  *
- * resource_type defaults to 'observation' — generic enough to cover
- * anecdotes, quotes, and pastor-observed moments. The pastor can
- * re-categorise on the Sermons side.
+ * resource_type defaults to 'illustration' — the closest fit out of
+ * the Sermons app's allowed values ('story', 'quote', 'illustration',
+ * 'joke', 'note', 'photo') for the kind of real-life parallel /
+ * anecdote / pastor-observed moment Daily Capture typically surfaces.
+ * The pastor can re-categorise to story/quote/joke on the Sermons
+ * side if needed.
  *
  * source_label: defaults to "Daily Capture <YYYY-MM-DD>" so when the
  * pastor browses the Resources page, they can see at a glance which
@@ -142,7 +145,7 @@ export async function saveAsSermonResource({
       : `Daily Capture · ${dateLabel}`;
   const payload = {
     owner_user_id: ownerUserId,
-    resource_type: 'observation',
+    resource_type: 'illustration',
     title: (segment.description || '').trim() || null,
     content: segment.excerpt.trim(),
     source: sourceLabel,
