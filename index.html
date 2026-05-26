@@ -2,13 +2,44 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#5b1a1a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="WFUMC Capture" />
+
     <!-- Daily captures are intentionally NOT indexed. Pastor-only data;
          belt-and-suspenders alongside the noindex meta and the route-
          level auth gate. -->
     <meta name="robots" content="noindex, nofollow" />
+    <meta name="googlebot" content="noindex, nofollow" />
+
     <title>WFUMC Daily Capture</title>
+
+    <!-- GitHub Pages SPA redirect handler. See public/404.html. When a
+         direct URL like /captures/abc lands on Pages (which returns 404
+         for any path that isn't a real file), 404.html re-redirects
+         here with the route encoded in the query string; this script
+         decodes it back into a proper history entry so the React
+         router sees the path it expected. -->
+    <script type="text/javascript">
+      (function (l) {
+        if (l.search[1] === '/') {
+          var decoded = l.search
+            .slice(1)
+            .split('&')
+            .map(function (s) {
+              return s.replace(/~and~/g, '&');
+            })
+            .join('?');
+          window.history.replaceState(
+            null,
+            null,
+            l.pathname.slice(0, -1) + decoded + l.hash
+          );
+        }
+      })(window.location);
+    </script>
   </head>
   <body>
     <div id="root"></div>
