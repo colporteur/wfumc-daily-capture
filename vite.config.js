@@ -20,7 +20,20 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
+      // injectManifest strategy lets us own the service worker. We
+      // need this for Web Share Target with method='POST' so the SW
+      // can intercept the share intent, read the uploaded transcript
+      // file, and hand it off to the React page. The default
+      // generateSW strategy can't handle POST navigations.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       registerType: 'autoUpdate',
+      injectRegister: 'auto',
+      injectManifest: {
+        // mammoth + future bundle growth — keep room in the precache.
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+      },
       includeAssets: ['favicon.ico', 'robots.txt', 'icons/*'],
       manifest: {
         name: 'WFUMC Daily Capture',
@@ -50,11 +63,36 @@ export default defineConfig({
             purpose: 'maskable',
           },
         ],
-      },
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-        // mammoth is heavy; bump the cache cap so it can be precached.
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // Web Share Target: when this PWA is installed on Android,
+        // the OS's share sheet will show "WFUMC Daily Capture" as a
+        // target for shared text/files. Plaud emits a .txt transcript
+        // file when you share — `files` declares we accept it.
+        //   action     — relative to scope, so this becomes
+        //                <scope>share (e.g. /wfumc-daily-capture/share)
+        //   method     — POST is required for file shares
+        //   enctype    — multipart for file uploads
+        //   params     — names of the form fields the OS will populate
+        //   files      — the accepted MIME types and form field name
+        //
+        // We also accept the GET-style text/title/url params as a
+        // fallback so apps that share plain text (rather than a file)
+        // still work.
+        share_target: {
+          action: 'share',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            title: 'title',
+            text: 'text',
+            url: 'url',
+            files: [
+              {
+                name: 'file',
+                accept: ['text/plain', '.txt', 'text/*'],
+              },
+            ],
+          },
+        },
       },
     }),
   ],
