@@ -89,6 +89,132 @@ function parseClaudeJson(text) {
 }
 
 // =====================================================================
+// splitTranscriptIntoChunks
+// =====================================================================
+//
+// Long Plaud transcripts (1+ hour recordings → 10k+ words) reliably
+// blow past Supabase Edge Functions' 150-second idle timeout when sent
+// to Claude in a single call. The fix is to split the transcript at
+// natural boundaries and run Claude on each chunk independently,
+// accumulating segments in the DB as we go.
+//
+// Splitting strategy (cascading fallback):
+//   1. Paragraph breaks (double newline) — most natural cut
+//   2. Single newlines — works for transcripts without paragraph
+//      separation but with line-by-line speaker turns
+//   3. Sentence boundaries — last resort for big unbroken walls
+//
+// `maxWords` defaults to 2500 — comfortable for Claude to process in
+// well under 60 seconds even with verbose segmentation output. Smaller
+// chunks would be safer but multiply the round-trips. 2500 is a
+// reasonable middle ground for the typical Plaud transcript profile.
+
+export function splitTranscriptIntoChunks(text, maxWords = 2500) {
+  const raw = (text || '').trim();
+  if (!raw) return [];
+  // Fast path: short enough to send as one chunk.
+  if (countWords(raw) <= maxWords) return [raw];
+
+  // Cascading splitter: paragraphs → lines → sentences → hard wrap.
+  // Each pass tries to keep semantic units intact while staying under
+  // the word budget.
+  const units = splitIntoUnits(raw, maxWords);
+  const chunks = [];
+  let current = '';
+  let currentWords = 0;
+  for (const u of units) {
+    const uWords = countWords(u);
+    if (currentWords > 0 && currentWords + uWords > maxWords) {
+      chunks.push(current);
+      current = u;
+      currentWords = uWords;
+    } else {
+      current = current ? current + '\n\n' + u : u;
+      currentWords += uWords;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
+// Recursive splitter: take a wall of text and break it into units
+// each <= maxWords. Each layer of fallback only applies when the
+// chosen separator still leaves units oversized.
+function splitIntoUnits(text, maxWords) {
+  const paragraphs = text.split(/\n\s*\n+/).map((p) => p.trim()).filter(Boolean);
+  const out = [];
+  for (const p of paragraphs) {
+    if (countWords(p) <= maxWords) {
+      out.push(p);
+      continue;
+    }
+    // Paragraph too big → try single newlines.
+    const lines = p.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+    let buf = '';
+    let bufWords = 0;
+    for (const line of lines) {
+      const lw = countWords(line);
+      if (lw > maxWords) {
+        // Line is itself too long; flush buffer, then split into sentences.
+        if (buf) {
+          out.push(buf);
+          buf = '';
+          bufWords = 0;
+        }
+        const sentences = line
+          .split(/(?<=[.!?])\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+        let sbuf = '';
+        let sbufWords = 0;
+        for (const s of sentences) {
+          const sw = countWords(s);
+          if (sw > maxWords) {
+            // Single sentence still too long (very rare) — hard-wrap
+            // by words. Last resort; preserves data, sacrifices
+            // semantic boundary.
+            if (sbuf) {
+              out.push(sbuf);
+              sbuf = '';
+              sbufWords = 0;
+            }
+            const words = s.split(/\s+/);
+            for (let i = 0; i < words.length; i += maxWords) {
+              out.push(words.slice(i, i + maxWords).join(' '));
+            }
+            continue;
+          }
+          if (sbufWords + sw > maxWords && sbuf) {
+            out.push(sbuf);
+            sbuf = s;
+            sbufWords = sw;
+          } else {
+            sbuf = sbuf ? sbuf + ' ' + s : s;
+            sbufWords += sw;
+          }
+        }
+        if (sbuf) out.push(sbuf);
+      } else if (bufWords + lw > maxWords && buf) {
+        out.push(buf);
+        buf = line;
+        bufWords = lw;
+      } else {
+        buf = buf ? buf + '\n' + line : line;
+        bufWords += lw;
+      }
+    }
+    if (buf) out.push(buf);
+  }
+  return out;
+}
+
+function countWords(s) {
+  const t = (s || '').trim();
+  if (!t) return 0;
+  return t.split(/\s+/).length;
+}
+
+// =====================================================================
 // segmentAndClassifyTranscript
 // =====================================================================
 //

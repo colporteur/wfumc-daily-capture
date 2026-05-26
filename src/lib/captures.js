@@ -3,6 +3,10 @@
 // row shows up to the creator immediately.
 
 import { supabase, withTimeout } from './supabase';
+import {
+  segmentAndClassifyTranscript,
+  splitTranscriptIntoChunks,
+} from './claude';
 
 // ---------------------------------------------------------------------
 // daily_captures
@@ -227,6 +231,114 @@ export async function markSegmentDiscarded(segmentId) {
     decisionAt: new Date().toISOString(),
     savedTo: [],
   });
+}
+
+// ---------------------------------------------------------------------
+// extractAllSegmentsForCapture — chunked Claude orchestration
+// ---------------------------------------------------------------------
+//
+// Long transcripts (1+ hr Plaud recordings → 10k+ words) reliably hit
+// Supabase Edge Functions' 150-second idle timeout when we send the
+// whole thing to Claude in a single shot. This orchestrator splits the
+// transcript into ~2500-word chunks, calls Claude on each chunk
+// sequentially, and inserts the returned segments into the DB
+// chunk-by-chunk so progress survives a mid-run failure.
+//
+// `onProgress({chunkIndex, chunkCount, segmentsSoFar})` is invoked
+// before each Claude call so the UI can render meaningful status
+// ("chunk 3 of 6, 12 segments so far"). It's optional — pass a no-op
+// if you don't need the feedback.
+//
+// Returns { totalSegments, chunkCount, partial } where `partial` is
+// true if some chunks succeeded but later chunks failed. In the
+// partial case, the caller can still navigate to the review screen —
+// the segments that DID land are real.
+//
+// On total failure (zero chunks succeeded), throws the underlying
+// Claude error.
+
+export async function extractAllSegmentsForCapture({
+  captureId,
+  ownerUserId,
+  text,
+  contextHint = '',
+  maxWordsPerChunk = 2500,
+  onProgress = () => {},
+}) {
+  if (!captureId || !ownerUserId) {
+    throw new Error(
+      'extractAllSegmentsForCapture requires captureId and ownerUserId.'
+    );
+  }
+  const chunks = splitTranscriptIntoChunks(text || '', maxWordsPerChunk);
+  if (chunks.length === 0) {
+    throw new Error('Empty transcript — nothing to extract.');
+  }
+
+  let totalSegments = 0;
+  let firstError = null;
+  let succeededAny = false;
+
+  for (let i = 0; i < chunks.length; i++) {
+    onProgress({
+      chunkIndex: i + 1,
+      chunkCount: chunks.length,
+      segmentsSoFar: totalSegments,
+    });
+    try {
+      const result = await segmentAndClassifyTranscript({
+        text: chunks[i],
+        contextHint:
+          chunks.length > 1
+            ? `Part ${i + 1} of ${chunks.length}. ${contextHint || ''}`.trim()
+            : contextHint,
+      });
+      const segs = result?.segments || [];
+      if (segs.length > 0) {
+        // Bulk-insert with sort_order continuing from where the
+        // previous chunk left off, so the review screen reads in
+        // transcript order even across chunk boundaries.
+        const rows = segs.map((s, j) => ({
+          capture_id: captureId,
+          owner_user_id: ownerUserId,
+          excerpt: (s.excerpt || '').trim(),
+          description: (s.description || '').trim() || null,
+          proposed_destinations: Array.isArray(s.proposed_destinations)
+            ? s.proposed_destinations
+            : [],
+          mentioned_names: Array.isArray(s.mentioned_names)
+            ? s.mentioned_names
+            : [],
+          rationale: (s.rationale || '').trim() || null,
+          sort_order: totalSegments + j,
+        }));
+        const { error: insErr } = await withTimeout(
+          supabase.from('daily_capture_segments').insert(rows)
+        );
+        if (insErr) throw insErr;
+        totalSegments += segs.length;
+      }
+      succeededAny = true;
+    } catch (e) {
+      if (!firstError) firstError = e;
+      // Don't break — try the remaining chunks. Some might still
+      // succeed (e.g., one bad chunk doesn't poison the rest).
+    }
+  }
+
+  // If every chunk failed, propagate the first error so the caller
+  // can show it and the capture stays in the 'pending' state for
+  // future retry.
+  if (!succeededAny && firstError) {
+    throw firstError;
+  }
+
+  return {
+    totalSegments,
+    chunkCount: chunks.length,
+    partial: Boolean(firstError),
+    error: firstError ? firstError.message || String(firstError) : null,
+  };
 }
 
 // Once every segment has a decision, flip the parent capture to

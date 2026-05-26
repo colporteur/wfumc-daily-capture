@@ -2,11 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import {
-  bulkInsertSegments,
   createCapture,
+  extractAllSegmentsForCapture,
   updateCapture,
 } from '../lib/captures';
-import { segmentAndClassifyTranscript } from '../lib/claude';
 import LoadingSpinner from '../components/LoadingSpinner.jsx';
 
 // Landing page for the Web Share Target intent.
@@ -21,7 +20,7 @@ import LoadingSpinner from '../components/LoadingSpinner.jsx';
 //
 // Either way, we end up with a payload. The auto-flow then:
 //   - creates a daily_captures row
-//   - runs Claude segmentAndClassifyTranscript
+//   - runs Claude extraction (chunked for long transcripts)
 //   - persists segments
 //   - flips extraction_status to 'extracted'
 //   - navigates to /captures/:id so the pastor lands on the review
@@ -102,11 +101,24 @@ export default function ShareTarget() {
 
         if (cancelled) return;
         setProgressMsg('Asking Claude to segment + classify…');
-        let extraction;
+        let result;
         try {
-          extraction = await segmentAndClassifyTranscript({
+          result = await extractAllSegmentsForCapture({
+            captureId: capture.id,
+            ownerUserId: user.id,
             text: payload.text,
             contextHint: defaultTitle,
+            onProgress: ({ chunkIndex, chunkCount, segmentsSoFar }) => {
+              if (chunkCount > 1 && !cancelled) {
+                setProgressMsg(
+                  `Asking Claude to segment + classify (part ${chunkIndex} of ${chunkCount}` +
+                    (segmentsSoFar > 0
+                      ? `, ${segmentsSoFar} segments so far`
+                      : '') +
+                    `)…`
+                );
+              }
+            },
           });
         } catch (e) {
           // Save the error on the capture row so the dashboard / review
@@ -121,16 +133,12 @@ export default function ShareTarget() {
         }
 
         if (cancelled) return;
-        setProgressMsg('Saving segments…');
-        await bulkInsertSegments({
-          captureId: capture.id,
-          ownerUserId: user.id,
-          segments: extraction.segments,
-        });
         await updateCapture(capture.id, {
           extractionStatus: 'extracted',
           extractedAt: new Date().toISOString(),
-          extractionError: null,
+          extractionError: result.partial
+            ? `Partial extraction: ${result.error}`
+            : null,
         });
 
         if (!cancelled) {

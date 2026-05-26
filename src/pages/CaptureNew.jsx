@@ -2,11 +2,10 @@ import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import {
-  bulkInsertSegments,
   createCapture,
+  extractAllSegmentsForCapture,
   updateCapture,
 } from '../lib/captures';
-import { segmentAndClassifyTranscript } from '../lib/claude';
 
 // New capture page: pastor pastes/uploads a transcript, optionally
 // fills in metadata, and we kick off the Claude extraction pass right
@@ -76,11 +75,26 @@ export default function CaptureNew() {
       });
 
       setProgressMsg('Asking Claude to segment + classify…');
-      let extraction;
+      let result;
       try {
-        extraction = await segmentAndClassifyTranscript({
+        result = await extractAllSegmentsForCapture({
+          captureId: capture.id,
+          ownerUserId: user.id,
           text,
           contextHint: contextHint || title,
+          onProgress: ({ chunkIndex, chunkCount, segmentsSoFar }) => {
+            // Long-transcript path: tell the pastor how far along we are
+            // so they don't think the spinner has hung.
+            if (chunkCount > 1) {
+              setProgressMsg(
+                `Asking Claude to segment + classify (part ${chunkIndex} of ${chunkCount}` +
+                  (segmentsSoFar > 0
+                    ? `, ${segmentsSoFar} segments so far`
+                    : '') +
+                  `)…`
+              );
+            }
+          },
         });
       } catch (e) {
         // Persist the error on the capture row so the dashboard can
@@ -91,17 +105,15 @@ export default function CaptureNew() {
         throw e;
       }
 
-      setProgressMsg('Saving segments…');
-      await bulkInsertSegments({
-        captureId: capture.id,
-        ownerUserId: user.id,
-        segments: extraction.segments,
-      });
-
+      // Even a partial extraction (some chunks failed, some landed) is
+      // worth surfacing — the pastor can review what came through and
+      // re-extract if they want more.
       await updateCapture(capture.id, {
         extractionStatus: 'extracted',
         extractedAt: new Date().toISOString(),
-        extractionError: null,
+        extractionError: result.partial
+          ? `Partial extraction: ${result.error}`
+          : null,
       });
 
       navigate(`/captures/${capture.id}`);

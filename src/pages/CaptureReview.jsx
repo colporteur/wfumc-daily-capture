@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext.jsx';
 import {
-  bulkInsertSegments,
   deleteCapture,
   deleteSegmentsForCapture,
+  extractAllSegmentsForCapture,
   getCapture,
   listSegments,
   markSegmentDiscarded,
@@ -13,7 +13,6 @@ import {
   updateCapture,
   updateSegment,
 } from '../lib/captures';
-import { segmentAndClassifyTranscript } from '../lib/claude';
 import {
   saveAsPastoralInteraction,
   saveAsPastoralNote,
@@ -116,19 +115,25 @@ export default function CaptureReview() {
         await deleteSegmentsForCapture(capture.id);
       }
 
-      const extraction = await segmentAndClassifyTranscript({
-        text: capture.raw_text,
-        contextHint: capture.title || '',
-      });
-      await bulkInsertSegments({
+      const result = await extractAllSegmentsForCapture({
         captureId: capture.id,
         ownerUserId: user.id,
-        segments: extraction.segments,
+        text: capture.raw_text,
+        contextHint: capture.title || '',
+        onProgress: ({ chunkIndex, chunkCount, segmentsSoFar }) => {
+          if (chunkCount > 1) {
+            setError(
+              `Asking Claude (part ${chunkIndex} of ${chunkCount}, ${segmentsSoFar} segments so far)…`
+            );
+          }
+        },
       });
       await updateCapture(capture.id, {
         extractionStatus: 'extracted',
         extractedAt: new Date().toISOString(),
-        extractionError: null,
+        extractionError: result.partial
+          ? `Partial extraction: ${result.error}`
+          : null,
       });
       await refresh();
     } catch (e) {
