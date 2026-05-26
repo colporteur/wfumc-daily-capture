@@ -209,3 +209,45 @@ export function fullPersonName(p) {
   const last = p.last_name?.trim() || '';
   return [first, middle, last].filter(Boolean).join(' ');
 }
+
+// Create a minimal pastoral_people row from just a name string.
+//
+// Daily Capture lets the pastor add a new person inline from the
+// PersonPicker without bouncing to the Pastoral Records app. We only
+// require a name here — every other field (phone, email, address,
+// church_member flag, etc.) is left blank and can be filled in later
+// on the person's detail page in the Pastoral Records app.
+//
+// Splitting heuristic: the last whitespace-separated word becomes
+// last_name; everything before becomes first_name. Multi-word last
+// names ("Van Allen") will get the wrong split — pastor can fix on
+// the detail page. This keeps the inline UX to a single field.
+export async function createMinimalPerson({ ownerUserId, name }) {
+  if (!ownerUserId) throw new Error('Missing user.');
+  const trimmed = (name || '').trim();
+  if (!trimmed) throw new Error('Name is required.');
+  const parts = trimmed.split(/\s+/);
+  let first_name;
+  let last_name = null;
+  if (parts.length === 1) {
+    first_name = parts[0];
+  } else {
+    last_name = parts[parts.length - 1];
+    first_name = parts.slice(0, -1).join(' ');
+  }
+  const { data, error } = await withTimeout(
+    supabase
+      .from('pastoral_people')
+      .insert({
+        owner_user_id: ownerUserId,
+        first_name,
+        last_name,
+      })
+      .select(
+        'id, first_name, middle_name, last_name, preferred_name, email, is_deceased'
+      )
+      .single()
+  );
+  if (error) throw error;
+  return data;
+}
